@@ -1,0 +1,268 @@
+
+import kidneyFailure.ExpertSystem.*
+
+
+rule "Handling symptom edema"
+	salience 15
+	when
+		$patient: Patient()
+    	$diagnosis: Diagnosis($patient == patient)
+    	$symptom: Symptom(name == "edema", status == SymptomStatus.NOT_TREATED, $patient.id == pid)
+	then
+    	modify($symptom) {setStatus(SymptomStatus.TREATED)};
+    	$diagnosis.incrementRenalInsufficiencyIndex(3);
+    	$diagnosis.addSymptom($symptom);
+    	insert(new Treatment("take diuretics", $patient.getId()));
+end
+
+rule "Handling symptom hypertension"
+	salience 15
+	when
+		$patient: Patient()
+    	$diagnosis: Diagnosis($patient == patient)
+    	$symptom: Symptom(name == "hypertension", status == SymptomStatus.NOT_TREATED, $patient.id == pid)
+	then
+    	modify($symptom) {setStatus(SymptomStatus.TREATED)};
+    	$diagnosis.incrementRenalInsufficiencyIndex(2);
+    	$diagnosis.addSymptom($symptom);
+    	insert(new Treatment("take diuretics", $patient.getId()));
+end
+
+rule "Increment risk when high uremia in adult males"
+	salience 15
+	when
+		$patient: Patient(age > 18, sex == "male")
+		$analytics: Analytics(urea > 55)
+    	$diagnosis: Diagnosis($patient == patient, $analytics == analytics)
+	then
+       	$diagnosis.incrementRenalInsufficiencyIndex(5);
+end
+
+rule "Increment risk when high uremia in kids or females"
+	salience 15
+	when
+		$patient: Patient(age <= 18 || sex == "female")
+		$analytics: Analytics(urea > 45)
+    	$diagnosis: Diagnosis($patient == patient, $analytics == analytics)
+	then
+        $diagnosis.incrementRenalInsufficiencyIndex(5);
+end
+
+rule "Increment risk when GFR decreases"
+	salience 15
+	when
+		$patient: Patient()
+    	$diagnosis: Diagnosis($gfr : gfr, $patient == patient)
+	then
+		if($gfr < 15){
+			$diagnosis.incrementRenalInsufficiencyIndex(80);
+		} else if($gfr >= 15 && $gfr < 30){
+			$diagnosis.incrementRenalInsufficiencyIndex(60);
+		} else if($gfr >= 30 && $gfr < 45){
+			$diagnosis.incrementRenalInsufficiencyIndex(40);
+		} else if($gfr >= 45 && $gfr < 60){
+			$diagnosis.incrementRenalInsufficiencyIndex(20);
+		} else if($gfr >= 60 && $gfr < 90){
+			$diagnosis.incrementRenalInsufficiencyIndex(5);
+		} else {$diagnosis.incrementRenalInsufficiencyIndex(0);}
+end
+
+rule "Increment risk with albuminuria"
+	salience 15
+	when
+		$patient: Patient()
+    	$analytics: Analytics($albumin_creatinine : albumin_creatinine)
+    	$diagnosis: Diagnosis($patient == patient, $analytics == analytics)
+	then
+		if($albumin_creatinine >= 30 && $albumin_creatinine <= 300){
+    		$diagnosis.incrementRenalInsufficiencyIndex(20);
+    	} else if($albumin_creatinine > 300){
+    		$diagnosis.incrementRenalInsufficiencyIndex(40);
+    	} else {$diagnosis.incrementRenalInsufficiencyIndex(0);}
+end
+
+rule "Determine renal failure risk"
+	when
+		$patient: Patient()
+    	$diagnosis: Diagnosis($renalInsufficiencyIndex : renalInsufficiencyIndex, $patient == patient)
+	then
+		if($renalInsufficiencyIndex < 20){
+			$diagnosis.setFailureRisk(KidneyFailureRisk.NO_FAILURE);
+			$diagnosis.setRenalInsufficiencyType(RenalInsufficiencyType.NO_FAILURE);
+		} else if($renalInsufficiencyIndex >= 20 && $renalInsufficiencyIndex < 40){
+			$diagnosis.setFailureRisk(KidneyFailureRisk.SLIGHT_RISK);
+		} else if($renalInsufficiencyIndex >= 40 && $renalInsufficiencyIndex < 60){
+			$diagnosis.setFailureRisk(KidneyFailureRisk.MODERATE_RISK);
+		} else if($renalInsufficiencyIndex >= 60 && $renalInsufficiencyIndex < 80){
+			$diagnosis.setFailureRisk(KidneyFailureRisk.HIGH_RISK);
+		} else {$diagnosis.setFailureRisk(KidneyFailureRisk.VERY_HIGH_RISK);}
+    	
+end
+
+rule "Determine acute renal insufficiency - Symptoms"
+	when
+		$patient: Patient()
+		$diagnosis: Diagnosis(!analytics.recurrent, $failureRisk : failureRisk, $patient == patient)
+		eval($failureRisk != KidneyFailureRisk.NO_FAILURE)
+		exists(
+		       Symptom(name == "arrhythmia", $patient.id == pid) ||
+			   Symptom(name == "seizures", $patient.id == pid) ||
+			   Symptom(name == "nausea", $patient.id == pid) ||
+		       Symptom(name == "confusion", $patient.id == pid)
+		       )
+	then
+		$diagnosis.setRenalInsufficiencyType(RenalInsufficiencyType.ACUTE);
+end
+
+rule "Determine chronic renal insufficiency - Symptoms"
+	when
+		$patient: Patient()
+		$diagnosis: Diagnosis(!analytics.recurrent, $failureRisk : failureRisk, $patient == patient)
+		eval($failureRisk != KidneyFailureRisk.NO_FAILURE)
+		exists(
+		       Symptom(name == "cramps", $patient.id == pid) ||
+			   Symptom(name == "vomiting", $patient.id == pid) ||
+			   Symptom(name == "lack of appetite", $patient.id == pid) ||
+		       Symptom(name == "skin itch", $patient.id == pid)
+		       )
+	then
+		$diagnosis.setRenalInsufficiencyType(RenalInsufficiencyType.CHRONIC);
+end
+
+rule "Determine chronic renal insufficiency - Analytics"
+	when
+		$patient: Patient()
+		$diagnosis: Diagnosis(analytics.recurrent, $failureRisk : failureRisk, $patient == patient)
+		eval($failureRisk != KidneyFailureRisk.NO_FAILURE)
+	then
+		$diagnosis.setRenalInsufficiencyType(RenalInsufficiencyType.CHRONIC);
+end	
+
+rule "Unknown renal insufficiency type - Common symptoms"
+	when
+		$patient: Patient()
+		$diagnosis: Diagnosis(!analytics.recurrent, $failureRisk : failureRisk, $patient == patient)
+		eval($failureRisk != KidneyFailureRisk.NO_FAILURE)
+		exists(
+		       Symptom(name == "edema", $patient.id == pid) ||
+			   Symptom(name == "hypertension", $patient.id == pid) ||
+			   Symptom(name == "fatigue", $patient.id == pid) ||
+		       Symptom(name == "fever", $patient.id == pid)
+		       )
+		not(
+			Symptom(name == "arrhythmia", $patient.id == pid) ||
+			Symptom(name == "seizures", $patient.id == pid) ||
+			Symptom(name == "nausea", $patient.id == pid) ||
+		    Symptom(name == "confusion", $patient.id == pid) ||
+		    Symptom(name == "cramps", $patient.id == pid) ||
+			Symptom(name == "vomiting", $patient.id == pid) ||
+			Symptom(name == "lack of appetite", $patient.id == pid) ||
+		    Symptom(name == "skin itch", $patient.id == pid)
+			)
+	then
+		$diagnosis.setRenalInsufficiencyType(RenalInsufficiencyType.CANNNOT_TELL_NEED_FURTHER_EXPLORATION);
+end
+
+rule "Unknown renal insufficiency type - Asymptomatic"
+	when
+		$patient: Patient()
+		$diagnosis: Diagnosis(!analytics.recurrent, $failureRisk : failureRisk, $patient == patient)
+		eval($failureRisk != KidneyFailureRisk.NO_FAILURE)
+		not(Symptom($patient.id == pid))
+	then
+		$diagnosis.setRenalInsufficiencyType(RenalInsufficiencyType.CANNNOT_TELL_NEED_FURTHER_EXPLORATION);
+end
+
+rule "Handling symptom cramps"
+	when
+		$patient: Patient()
+    	$diagnosis: Diagnosis($patient == patient)
+    	$symptom: Symptom(name == "cramps", status == SymptomStatus.NOT_TREATED, $patient.id == pid)
+	then
+    	modify($symptom) {setStatus(SymptomStatus.TREATED)};
+    	$diagnosis.addSymptom($symptom);
+    	insert(new Treatment("stretch and massage the muscle", $patient.getId()));
+    	insert(new Treatment("stay hydrated", $patient.getId()));
+end
+
+rule "Handling symptom seizures"
+	when
+		$patient: Patient()
+    	$diagnosis: Diagnosis($patient == patient)
+    	$symptom: Symptom(name == "seizures", status == SymptomStatus.NOT_TREATED, $patient.id == pid)
+	then
+    	modify($symptom) {setStatus(SymptomStatus.TREATED)};
+    	$diagnosis.addSymptom($symptom);
+end
+
+rule "Handling symptom skin itch"
+	when
+		$patient: Patient()
+    	$diagnosis: Diagnosis($patient == patient)
+    	$symptom: Symptom(name == "skin itch", status == SymptomStatus.NOT_TREATED, $patient.id == pid)
+	then
+    	modify($symptom) {setStatus(SymptomStatus.TREATED)};
+    	$diagnosis.addSymptom($symptom);
+    	insert(new Treatment("daily use of moisturizers", $patient.getId()));
+end
+
+rule "Handling symptom arrhythmia"
+	when
+		$patient: Patient()
+    	$diagnosis: Diagnosis($patient == patient)
+    	$symptom: Symptom(name == "arrhythmia", status == SymptomStatus.NOT_TREATED, $patient.id == pid)
+	then
+    	modify($symptom) {setStatus(SymptomStatus.TREATED)};
+    	$diagnosis.addSymptom($symptom);
+    	insert(new Treatment("monitor rhythm and heart rate", $patient.getId()));
+end
+
+rule "Handling symptom vomiting"
+	when
+		$patient: Patient()
+    	$diagnosis: Diagnosis($patient == patient)
+    	$symptom: Symptom(name == "vomiting", status == SymptomStatus.NOT_TREATED, $patient.id == pid)
+	then
+    	modify($symptom) {setStatus(SymptomStatus.TREATED)};
+    	$diagnosis.addSymptom($symptom);
+    	insert(new Treatment("stay hydrated", $patient.getId()));
+end
+
+rule "Handling symptom fever"
+	when
+		$patient: Patient()
+    	$diagnosis: Diagnosis($patient == patient)
+    	$symptom: Symptom(name == "fever", status == SymptomStatus.NOT_TREATED, $patient.id == pid)
+	then
+    	modify($symptom) {setStatus(SymptomStatus.TREATED)};
+    	$diagnosis.addSymptom($symptom);
+    	insert(new Treatment("take ibuprofen", $patient.getId()));
+end
+
+rule "Treatment for high renal failure risk"
+	when
+		$patient: Patient()
+    	$diagnosis: Diagnosis($failureRisk : failureRisk, $patient == patient)
+    	eval($failureRisk == KidneyFailureRisk.HIGH_RISK)
+	then
+    	insert(new Treatment("start preparation for renal replacement", $patient.getId()));
+end
+
+rule "Treatment for very high renal failure risk"
+	when
+		$patient: Patient()
+    	$diagnosis: Diagnosis($failureRisk : failureRisk, $patient == patient)
+    	eval($failureRisk == KidneyFailureRisk.VERY_HIGH_RISK)
+	then
+    	insert(new Treatment("dialysis or kidney transplant", $patient.getId()));
+end
+
+rule "Adding treatments to diagnosis"
+	when
+		$patient: Patient()
+    	$diagnosis: Diagnosis($patient == patient)
+    	$treatment: Treatment($patient.id == pid)
+	then
+    	$diagnosis.addTreatment($treatment);
+end
+
